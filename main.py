@@ -53,6 +53,7 @@ BACKUP_FILE = "pump_controller_backup.json"
 ICON_SIZE = (20, 20)
 APP_VERSION = "3.3.0"
 
+
 # Constants for shear stress calculation
 CHAMBER_COEFFICIENTS = {
     "µ-Slide I 0.2 Luer": 512.9,
