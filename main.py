@@ -636,7 +636,7 @@ class PumpControlUI(tb.Window):
         except (FileNotFoundError, json.JSONDecodeError):
             return {"recent_files": [],
                     "templates": {},
-                    "fonts": {"default": 10, "title": 12, "editor": 11}}
+                    "fonts": {"default": 10, "title": 12, "plot_title": 12, "editor": 11}}
 
     def _save_settings(self):
         self.settings['theme'] = self.style.theme.name
@@ -644,8 +644,6 @@ class PumpControlUI(tb.Window):
         try:
             self.settings['main_pane'] = self.main_pane.sashpos(0)
             self.settings['right_pane'] = self.right_pane.sashpos(0)
-            if FigureCanvasTkAgg:
-                self.settings['plot_pane'] = self.plot_pane.sashpos(0)
         except (tk.TclError, AttributeError):
             pass
         with open(CONFIG_FILE, 'w') as f:
@@ -727,9 +725,10 @@ class PumpControlUI(tb.Window):
 
     def _initialize_fonts(self):
         """Initializes font objects based on settings."""
-        fonts = self.settings.get("fonts", {"default": 10, "title": 12, "editor": 11})
+        fonts = self.settings.get("fonts", {"default": 10, "title": 12, "plot_title": 12, "editor": 11})
         base_size = fonts.get("default", 10)
         title_size = fonts.get("title", 12)
+        plot_title_size = fonts.get("plot_title", title_size)
         editor_size = fonts.get("editor", 11)
 
         self.default_font = font.nametofont("TkDefaultFont")
@@ -739,14 +738,16 @@ class PumpControlUI(tb.Window):
         self.small_font = font.Font(family="Segoe UI", size=base_size - 1)
         self.mono_font = font.Font(family="Consolas", size=base_size)
         self.editor_font = font.Font(family="Segoe UI", size=editor_size)
+        self.plot_title_font = font.Font(family="Segoe UI", size=plot_title_size, weight="bold")
 
     def _configure_styles(self):
         """Configures the ttkbootstrap style system with custom fonts."""
-        fonts = self.settings.get("fonts", {"default": 10, "title": 12, "editor": 11})
+        fonts = self.settings.get("fonts", {"default": 10, "title": 12, "plot_title": 12, "editor": 11})
         editor_size = fonts.get("editor", 11)
 
         self.style.configure('TLabelFrame.Label', font=self.title_font)
-        self.style.configure('Treeview', rowheight=int(editor_size * 2.5), font=self.editor_font)
+        self.style.configure('Treeview', rowheight=int(editor_size * 2.5), font=self.editor_font,
+                             bordercolor=self.style.colors.light, borderwidth=1, relief='solid')
         self.style.configure('Treeview.Heading', font=self.title_font)
         self.style.map('Treeview', background=[('selected', self.style.colors.primary)])
         self.style.configure("Disabled.Treeview", foreground='gray')
@@ -763,7 +764,7 @@ class PumpControlUI(tb.Window):
         # You may need to update other specific widgets here if they use fonts directly
         self.step_time_label.config(font=self.small_font)
         self.total_duration_label.config(font=self.small_font)
-        self.estimated_vol_label.config(font=self.small_font)
+        self.dyn_label.config(font=self.small_font)
         self.status_info.config(font=self.small_font)
         # Update log text font if necessary
         self.log_text.config(font=self.small_font)
@@ -775,8 +776,8 @@ class PumpControlUI(tb.Window):
             bg, fg, grid_c = colors.get('bg'), colors.get('fg'), colors.get('light')
 
             default_fp = FontProperties(family=self.default_font.cget("family"), size=self.default_font.cget("size"))
-            title_fp = FontProperties(family=self.title_font.cget("family"), size=self.title_font.cget("size"),
-                                      weight=self.title_font.cget("weight"))
+            title_fp = FontProperties(family=self.plot_title_font.cget("family"), size=self.plot_title_font.cget("size"),
+                                      weight=self.plot_title_font.cget("weight"))
 
             self.fig.set_facecolor(bg)
             self.ax.set_facecolor(bg)
@@ -808,6 +809,7 @@ class PumpControlUI(tb.Window):
         self._create_connection_panel(left_panel.container)
         self._create_execution_panel(left_panel.container)
         self._create_manual_control_panel(left_panel.container)
+        self._create_log_panel(left_panel.container)
 
         self.main_pane.after(100, lambda: self.main_pane.sashpos(0, self.settings.get("main_pane", 400)))
 
@@ -824,7 +826,7 @@ class PumpControlUI(tb.Window):
         if FigureCanvasTkAgg:
             self._create_plot_panel(bottom_right_frame)
         else:
-            self._create_log_panel(bottom_right_frame)
+            tb.Label(bottom_right_frame, text="Matplotlib not available", padding=10).pack(fill=BOTH, expand=True)
 
         self.right_pane.after(100, lambda: self.right_pane.sashpos(0, self.settings.get("right_pane", 450)))
         self._create_status_bar()
@@ -974,8 +976,8 @@ class PumpControlUI(tb.Window):
         info_frame.grid(row=7, column=0, columnspan=2, sticky='ew')
         self.total_duration_label = tb.Label(info_frame, text="Total Duration: 00:00:00", font=self.small_font)
         self.total_duration_label.pack(side=LEFT)
-        self.estimated_vol_label = tb.Label(info_frame, text="Est. Volume: 0.00 mL", font=self.small_font)
-        self.estimated_vol_label.pack(side=RIGHT)
+        self.dyn_label = tb.Label(info_frame, text="Dyn: 0.00 dyn/cm²", font=self.small_font)
+        self.dyn_label.pack(side=RIGHT)
 
     def _create_manual_control_panel(self, parent):
         self.manual_frame = CollapsibleFrame(parent, text="Manual Control", bootstyle="secondary")
@@ -1083,13 +1085,14 @@ class PumpControlUI(tb.Window):
         track_btn.pack(side=LEFT, padx=5)
         ToolTip(track_btn, "Toggle live tracking to focus on the current progress.")
 
-        log_frame = tb.LabelFrame(self.plot_pane, text="Log", padding=(10, 5))
-        self.plot_pane.add(log_frame, weight=1)
+    def _create_log_panel(self, parent):
+        frame = tb.LabelFrame(parent, text="Log", padding=(10, 5))
+        frame.pack(fill=BOTH, expand=True, padx=5, pady=(0, 5))
 
-        log_controls = tb.Frame(log_frame)
+        log_controls = tb.Frame(frame)
         log_controls.pack(fill=X)
-        self.log_filter_cb = tb.Combobox(log_controls, values=["ALL", "INFO", "ERROR", "CONNECTION"], state="readonly",
-                                         width=12)
+        self.log_filter_cb = tb.Combobox(log_controls, values=["ALL", "INFO", "ERROR", "CONNECTION"],
+                                         state="readonly", width=12)
         self.log_filter_cb.pack(side=LEFT)
         self.log_filter_cb.set("ALL")
         self.log_filter_cb.bind("<<ComboboxSelected>>", self._apply_log_filter)
@@ -1097,21 +1100,10 @@ class PumpControlUI(tb.Window):
         self.log_search_entry.pack(side=LEFT, fill=X, expand=True, padx=5)
         self.log_search_entry.bind("<KeyRelease>", self._apply_log_filter)
 
-        log_text_frame = tb.Frame(log_frame)
+        log_text_frame = tb.Frame(frame)
         log_text_frame.pack(fill=BOTH, expand=True, pady=(5, 0))
         self.log_text = tb.Text(log_text_frame, height=6, state=DISABLED, wrap=WORD, font=self.small_font)
         vsb = tb.Scrollbar(log_text_frame, orient=VERTICAL, command=self.log_text.yview, bootstyle="round-secondary")
-        self.log_text.configure(yscrollcommand=vsb.set)
-        vsb.pack(side=RIGHT, fill=Y)
-        self.log_text.pack(side=LEFT, fill=BOTH, expand=True)
-
-        self.plot_pane.after(100, lambda: self.plot_pane.sashpos(0, self.settings.get("plot_pane", 250)))
-
-    def _create_log_panel(self, parent):
-        frame = tb.LabelFrame(parent, text="Status & Log", padding=10)
-        frame.pack(fill=BOTH, expand=True, padx=(10, 0), pady=(10, 0))
-        self.log_text = tb.Text(frame, height=10, state=DISABLED, wrap=WORD)
-        vsb = tb.Scrollbar(frame, orient=VERTICAL, command=self.log_text.yview, bootstyle="round-secondary")
         self.log_text.configure(yscrollcommand=vsb.set)
         vsb.pack(side=RIGHT, fill=Y)
         self.log_text.pack(side=LEFT, fill=BOTH, expand=True)
@@ -1582,21 +1574,28 @@ class PumpControlUI(tb.Window):
         duration_str = str(timedelta(seconds=int(total_s)))
         self.total_duration_label.config(text=f"Total Duration: {duration_str}")
 
-        # Update estimated volume
+        # Update dynamic pressure estimation
         try:
             vol_per_rev = float(self.settings.get("vol_per_rev_ul", 25.0))
+            tube_id_mm = float(self.settings.get("tube_inner_diameter_mm", 1.0))
             total_revs = 0
             flat_sequence = self._flatten_sequence_for_plot(include_disabled=False)
             for step in flat_sequence:
                 duration_s = step['duration'] * ({'s': 1, 'min': 60, 'hr': 3600}.get(step['unit'], 1))
-                avg_rpm = step['rpm']  # Simplification for ramp
+                avg_rpm = step['rpm']
                 total_revs += (avg_rpm / 60) * duration_s
 
             total_vol_ul = total_revs * vol_per_rev
-            total_vol_ml = total_vol_ul / 1000
-            self.estimated_vol_label.config(text=f"Est. Volume: {total_vol_ml:.2f} mL")
+            flow_rate_m3_s = (total_vol_ul * 1e-9) / total_s if total_s > 0 else 0
+            diameter_m = tube_id_mm / 1000
+            area_m2 = math.pi * (diameter_m / 2) ** 2
+            velocity_m_s = flow_rate_m3_s / area_m2 if area_m2 > 0 else 0
+            rho = 1000  # density of water kg/m^3
+            q_pa = 0.5 * rho * velocity_m_s ** 2
+            dyn_cm2 = q_pa * 10
+            self.dyn_label.config(text=f"Dyn: {dyn_cm2:.2f} dyn/cm²")
         except Exception:
-            self.estimated_vol_label.config(text="Est. Volume: N/A")
+            self.dyn_label.config(text="Dyn: N/A")
 
     def _mark_dirty(self, dirty_state):
         self.is_dirty = dirty_state

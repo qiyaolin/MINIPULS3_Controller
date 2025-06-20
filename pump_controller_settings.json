@@ -6,6 +6,7 @@
     "fonts": {
         "default": 13,
         "title": 12,
+        "plot_title": 12,
         "editor": 11
     },
     "theme": "litera",
