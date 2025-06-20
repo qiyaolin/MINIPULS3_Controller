@@ -21,7 +21,7 @@ import math
 
 # Check for optional libraries
 try:
-    from PIL import Image, ImageTk
+    from PIL import Image, ImageTk, ImageOps
 except ImportError:
     ImageTk = None
     print("Warning: Pillow library not found. Icons will not be displayed. Please install with 'pip install Pillow'")
@@ -777,7 +777,9 @@ class PumpControlUI(tb.Window):
                        'refresh', 'edit', 'copy', 'paste', 'duplicate', 'play', 'stop', 'new_file', 'help', 'about',
                        'pause', 'settings', 'template_add', 'template_load', 'export_img', 'export_csv', 'batch_edit',
                        'toggle_on', 'toggle_off']}
-        if not ImageTk: return
+        self.icon_images = {}
+        if not ImageTk:
+            return
 
         icon_map = {
             'new_file': 'file-earmark-plus.png', 'load': 'folder2-open.png', 'save': 'save.png',
@@ -797,9 +799,48 @@ class PumpControlUI(tb.Window):
             try:
                 path = resource_path(os.path.join('icons', filename))
                 img = Image.open(path).convert("RGBA").resize(ICON_SIZE, Image.LANCZOS)
-                self.icons[name] = ImageTk.PhotoImage(img)
+                self.icon_images[name] = img
             except Exception as e:
                 print(f"Warning: Could not load icon '{filename}': {e}")
+
+        self._apply_icon_colors()
+
+    def _apply_icon_colors(self):
+        """Tint icons white for dark themes and black for light themes."""
+        if not ImageTk or not hasattr(self, 'icon_images'):
+            return
+
+        from ttkbootstrap.themes import standard
+        t_type = standard.STANDARD_THEMES.get(self.style.theme.name, {}).get('type', 'light')
+        target = (255, 255, 255) if t_type == 'dark' else (0, 0, 0)
+
+        for name, img in self.icon_images.items():
+            alpha = img.split()[-1]
+            colored = Image.new('RGBA', img.size, target + (255,))
+            colored.putalpha(alpha)
+            self.icons[name] = ImageTk.PhotoImage(colored)
+
+        self._refresh_icon_widgets()
+
+    def _refresh_icon_widgets(self):
+        """Update widgets to use the newly colored icons."""
+        if not ImageTk:
+            return
+        if hasattr(self, 'add_phase_btn'):
+            self.add_phase_btn.config(image=self.icons['add'])
+            self.add_cycle_btn.config(image=self.icons['cycle'])
+            self.clear_btn.config(image=self.icons['clear'])
+            self.remove_btn.config(image=self.icons['remove'])
+            self.up_btn.config(image=self.icons['up'])
+            self.down_btn.config(image=self.icons['down'])
+        if hasattr(self, 'refresh_btn'):
+            self.refresh_btn.config(image=self.icons['refresh'])
+        if hasattr(self, 'run_seq_btn'):
+            self.run_seq_btn.config(image=self.icons['play'])
+            self.pause_seq_btn.config(image=self.icons['pause'])
+            self.stop_seq_btn.config(image=self.icons['stop'])
+        if hasattr(self, 'status_label') and hasattr(self, 'status_icon_key'):
+            self.status_label.config(image=self.icons.get(self.status_icon_key, self.icons['stop']))
 
     def _initialize_fonts(self):
         """Initializes font objects based on settings."""
@@ -854,13 +895,16 @@ class PumpControlUI(tb.Window):
             )
             self.sequence_tree.tag_configure('forward', background=fwd)
             self.sequence_tree.tag_configure('backward', background=rev)
-            self.sequence_tree.tag_configure('disabled', foreground='gray')
+            self.sequence_tree.tag_configure('disabled', foreground='red')
 
     def _update_styles_and_widgets(self):
         """Re-initializes fonts, re-configures styles, and updates widgets."""
         self._initialize_fonts()
         self._configure_styles()
+        self._apply_icon_colors()
         self._set_direction_tag_colors()
+        if hasattr(self, '_menu_bar'):
+            self._create_menu()
         # Update widgets that depend on these styles
         if hasattr(self, 'sequence_tree'):
             self._update_treeview()
@@ -942,6 +986,7 @@ class PumpControlUI(tb.Window):
         menu_bar = tb.Menu(self)
         menu_bar.configure(font=self.menu_font)
         self.config(menu=menu_bar)
+        self._menu_bar = menu_bar
 
         # File Menu
         file_menu = tb.Menu(menu_bar, tearoff=0)
@@ -1229,6 +1274,7 @@ class PumpControlUI(tb.Window):
         self.status_label = tb.Label(status_bar, text=" Status: Disconnected", image=self.icons['stop'], compound=LEFT,
                                      bootstyle="inverse-secondary", padding=5)
         self.status_label.pack(side=LEFT)
+        self.status_icon_key = 'stop'
         self.status_filename = tb.Label(status_bar, text="New Sequence*", bootstyle="inverse-secondary", padding=5)
         self.status_filename.pack(side=LEFT, padx=10)
         self.status_info = tb.Label(status_bar, text="", bootstyle="inverse-secondary", padding=5, font=self.small_font)
@@ -1392,6 +1438,7 @@ class PumpControlUI(tb.Window):
                     self.is_connected = True
                     self.status_label.config(text=" Status: Connected", image=self.icons['play'],
                                              bootstyle="inverse-success")
+                    self.status_icon_key = 'play'
                     self.settings['last_com_port'] = self.com_port_cb.get()
                     self.settings['unit_id'] = self.unit_id_entry.get()
                     self._send_pump_command("SR")
@@ -1400,6 +1447,7 @@ class PumpControlUI(tb.Window):
                     self.is_running_sequence = False  # Force stop if disconnected
                     self.status_label.config(text=" Status: Disconnected", image=self.icons['stop'],
                                              bootstyle="inverse-secondary")
+                    self.status_icon_key = 'stop'
                 self._update_ui_states()
         finally:
             self.after(100, self._process_results)
@@ -1473,6 +1521,7 @@ class PumpControlUI(tb.Window):
         with self._busy_cursor():
             self.status_label.config(text=" Status: Connecting...", image=self.icons['refresh'],
                                      bootstyle="inverse-info")
+            self.status_icon_key = 'refresh'
             self.update_idletasks()
             self.command_queue.put({"action": "connect", "port": port, "unit_id": unit_id, "baudrate": 19200})
 
