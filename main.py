@@ -21,7 +21,7 @@ import math
 
 # Check for optional libraries
 try:
-    from PIL import Image, ImageTk
+    from PIL import Image, ImageTk, ImageOps
 except ImportError:
     ImageTk = None
     print("Warning: Pillow library not found. Icons will not be displayed. Please install with 'pip install Pillow'")
@@ -50,7 +50,28 @@ def resource_path(relative_path):
 CONFIG_FILE = "pump_controller_settings.json"
 BACKUP_FILE = "pump_controller_backup.json"
 ICON_SIZE = (20, 20)
-APP_VERSION = "3.1.1"
+APP_VERSION = "3.2.0"
+
+# Constants for shear stress calculation
+CHAMBER_COEFFICIENTS = {
+    "µ-Slide I 0.2 Luer": 512.9,
+    "µ-Slide I 0.2 Luer Glass Bottom": 330.4,
+    "µ-Slide I 0.4 Luer": 131.6,
+    "µ-Slide I 0.4 Luer Glass Bottom": 104.7,
+    "µ-Slide I 0.6 Luer": 60.1,
+    "µ-Slide I 0.6 Luer Glass Bottom": 51.5,
+    "µ-Slide I 0.8 Luer": 34.7,
+    "µ-Slide I 0.8 Luer Glass Bottom": 31.0,
+    "µ-Slide VI 0.4": 176.1,
+    "µ-Slide VI 0.5 Glass Bottom": 99.1,
+    "µ-Slide VI 0.1": 10.7,
+    "µ-Slide Membrane ibiPore Flow": 131.6,
+    "µ-Slide I Luer 3D": 60.1,
+}
+
+DEFAULT_VISCOSITY = 0.0070
+DEFAULT_TUBE_COEFFICIENT = 0.63
+DEFAULT_CHAMBER = "µ-Slide VI 0.4"
 
 
 # ==============================================================================
@@ -455,8 +476,19 @@ class SettingsDialog(BaseDialog):
         # --- General Tab ---
         f_general.columnconfigure(1, weight=1)
         tb.Label(f_general, text="Theme:").grid(row=0, column=0, sticky='w', pady=5)
-        self.theme_cb = tb.Combobox(f_general, state="readonly", values=parent.style.theme_names())
-        self.theme_cb.set(self.settings.get("theme", "litera"))
+        from ttkbootstrap.themes import standard
+        theme_labels = []
+        self._theme_map = {}
+        for name in parent.style.theme_names():
+            t_type = standard.STANDARD_THEMES.get(name, {}).get("type", "light")
+            label = f"{name.capitalize()} ({t_type.capitalize()})"
+            theme_labels.append(label)
+            self._theme_map[label] = name
+
+        self.theme_cb = tb.Combobox(f_general, state="readonly", values=theme_labels)
+        theme_key = self.settings.get('theme', 'litera')
+        cur_theme_label = f"{theme_key.capitalize()} ({standard.STANDARD_THEMES.get(theme_key, {}).get('type', 'light').capitalize()})"
+        self.theme_cb.set(cur_theme_label)
         self.theme_cb.grid(row=0, column=1, sticky='ew', pady=5, padx=5)
 
         tb.Label(f_general, text="Auto-save Interval (min):").grid(row=1, column=0, sticky='w', pady=5)
@@ -475,6 +507,28 @@ class SettingsDialog(BaseDialog):
         self.vol_per_rev_entry = tb.Entry(f_pump, validate="key", validatecommand=self.vcmd_float)
         self.vol_per_rev_entry.insert(0, str(self.settings.get("vol_per_rev_ul", 25.0)))
         self.vol_per_rev_entry.grid(row=1, column=1, sticky='ew', pady=5, padx=5)
+
+        tb.Label(f_pump, text="Dynamic Viscosity η:").grid(row=2, column=0, sticky='w', pady=5)
+        self.viscosity_entry = tb.Entry(f_pump, validate="key", validatecommand=self.vcmd_float)
+        self.viscosity_entry.insert(0, str(self.settings.get("dynamic_viscosity", DEFAULT_VISCOSITY)))
+        self.viscosity_entry.grid(row=2, column=1, sticky='ew', pady=5, padx=5)
+
+        tb.Label(f_pump, text="Tube Coefficient k:").grid(row=3, column=0, sticky='w', pady=5)
+        self.tube_coeff_entry = tb.Entry(f_pump, validate="key", validatecommand=self.vcmd_float)
+        self.tube_coeff_entry.insert(0, str(self.settings.get("tube_coefficient", DEFAULT_TUBE_COEFFICIENT)))
+        self.tube_coeff_entry.grid(row=3, column=1, sticky='ew', pady=5, padx=5)
+
+        tb.Label(f_pump, text="Chamber Type:").grid(row=4, column=0, sticky='w', pady=5)
+        chamber_names = list(CHAMBER_COEFFICIENTS.keys())
+        self.chamber_cb = tb.Combobox(f_pump, values=chamber_names, state="readonly")
+        self.chamber_cb.set(self.settings.get("chamber_type", DEFAULT_CHAMBER))
+        self.chamber_cb.grid(row=4, column=1, sticky='ew', pady=5, padx=5)
+        self.chamber_cb.bind("<<ComboboxSelected>>", self._update_chamber_p)
+
+        tb.Label(f_pump, text="Chamber p:").grid(row=5, column=0, sticky='w', pady=5)
+        self.chamber_p_entry = tb.Entry(f_pump, validate="key", validatecommand=self.vcmd_float)
+        self.chamber_p_entry.insert(0, str(self.settings.get("chamber_p_value", CHAMBER_COEFFICIENTS.get(self.chamber_cb.get(), 176.1))))
+        self.chamber_p_entry.grid(row=5, column=1, sticky='ew', pady=5, padx=5)
 
         # --- Fonts Tab ---
         f_fonts.columnconfigure(1, weight=1)
@@ -536,12 +590,23 @@ class SettingsDialog(BaseDialog):
             del self.templates[selected_template]
             self.template_list.delete(selected_indices[0])
 
+    def _update_chamber_p(self, event=None):
+        sel = self.chamber_cb.get()
+        if sel in CHAMBER_COEFFICIENTS:
+            self.chamber_p_entry.delete(0, END)
+            self.chamber_p_entry.insert(0, str(CHAMBER_COEFFICIENTS[sel]))
+
     def on_ok(self):
         try:
-            self.settings["theme"] = self.theme_cb.get()
+            sel_label = self.theme_cb.get()
+            self.settings["theme"] = self._theme_map.get(sel_label, sel_label)
             self.settings["autosave_interval_min"] = int(self.autosave_entry.get())
             self.settings["tube_inner_diameter_mm"] = float(self.tube_id_entry.get())
             self.settings["vol_per_rev_ul"] = float(self.vol_per_rev_entry.get())
+            self.settings["dynamic_viscosity"] = float(self.viscosity_entry.get())
+            self.settings["tube_coefficient"] = float(self.tube_coeff_entry.get())
+            self.settings["chamber_type"] = self.chamber_cb.get()
+            self.settings["chamber_p_value"] = float(self.chamber_p_entry.get())
             self.settings["fonts"] = {key: var.get() for key, var in self.font_vars.items()}
             self.settings["templates"] = self.templates  # Save updated templates
             self.result = self.settings
@@ -605,6 +670,7 @@ class PumpControlUI(tb.Window):
         self.plot_is_live, self.actual_plot_line, self.actual_plot_data, self.last_plot_direction = False, None, {
             "time": [], "rpm": []}, None
         self.autosave_timer_id = None
+        self.current_rpm = 0.0
 
         self.geometry(self.settings.get("geometry", "1350x850"))
 
@@ -621,6 +687,7 @@ class PumpControlUI(tb.Window):
         self._load_icons()
         self._create_widgets()
         self._configure_styles()
+        self._set_direction_tag_colors()
         self._create_menu()
         self._setup_shortcuts()
 
@@ -639,9 +706,15 @@ class PumpControlUI(tb.Window):
             with open(CONFIG_FILE, 'r') as f:
                 return json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
-            return {"recent_files": [],
-                    "templates": {},
-                    "fonts": {"default": 10, "title": 12, "plot_title": 12, "editor": 11}}
+            return {
+                "recent_files": [],
+                "templates": {},
+                "fonts": {"default": 10, "title": 12, "plot_title": 12, "editor": 11},
+                "dynamic_viscosity": DEFAULT_VISCOSITY,
+                "tube_coefficient": DEFAULT_TUBE_COEFFICIENT,
+                "chamber_type": DEFAULT_CHAMBER,
+                "chamber_p_value": CHAMBER_COEFFICIENTS.get(DEFAULT_CHAMBER, 176.1),
+            }
 
     def _save_settings(self):
         self.settings['theme'] = self.style.theme.name
@@ -704,7 +777,9 @@ class PumpControlUI(tb.Window):
                        'refresh', 'edit', 'copy', 'paste', 'duplicate', 'play', 'stop', 'new_file', 'help', 'about',
                        'pause', 'settings', 'template_add', 'template_load', 'export_img', 'export_csv', 'batch_edit',
                        'toggle_on', 'toggle_off']}
-        if not ImageTk: return
+        self.icon_images = {}
+        if not ImageTk:
+            return
 
         icon_map = {
             'new_file': 'file-earmark-plus.png', 'load': 'folder2-open.png', 'save': 'save.png',
@@ -724,9 +799,48 @@ class PumpControlUI(tb.Window):
             try:
                 path = resource_path(os.path.join('icons', filename))
                 img = Image.open(path).convert("RGBA").resize(ICON_SIZE, Image.LANCZOS)
-                self.icons[name] = ImageTk.PhotoImage(img)
+                self.icon_images[name] = img
             except Exception as e:
                 print(f"Warning: Could not load icon '{filename}': {e}")
+
+        self._apply_icon_colors()
+
+    def _apply_icon_colors(self):
+        """Tint icons white for dark themes and black for light themes."""
+        if not ImageTk or not hasattr(self, 'icon_images'):
+            return
+
+        from ttkbootstrap.themes import standard
+        t_type = standard.STANDARD_THEMES.get(self.style.theme.name, {}).get('type', 'light')
+        target = (255, 255, 255) if t_type == 'dark' else (0, 0, 0)
+
+        for name, img in self.icon_images.items():
+            alpha = img.split()[-1]
+            colored = Image.new('RGBA', img.size, target + (255,))
+            colored.putalpha(alpha)
+            self.icons[name] = ImageTk.PhotoImage(colored)
+
+        self._refresh_icon_widgets()
+
+    def _refresh_icon_widgets(self):
+        """Update widgets to use the newly colored icons."""
+        if not ImageTk:
+            return
+        if hasattr(self, 'add_phase_btn'):
+            self.add_phase_btn.config(image=self.icons['add'])
+            self.add_cycle_btn.config(image=self.icons['cycle'])
+            self.clear_btn.config(image=self.icons['clear'])
+            self.remove_btn.config(image=self.icons['remove'])
+            self.up_btn.config(image=self.icons['up'])
+            self.down_btn.config(image=self.icons['down'])
+        if hasattr(self, 'refresh_btn'):
+            self.refresh_btn.config(image=self.icons['refresh'])
+        if hasattr(self, 'run_seq_btn'):
+            self.run_seq_btn.config(image=self.icons['play'])
+            self.pause_seq_btn.config(image=self.icons['pause'])
+            self.stop_seq_btn.config(image=self.icons['stop'])
+        if hasattr(self, 'status_label') and hasattr(self, 'status_icon_key'):
+            self.status_label.config(image=self.icons.get(self.status_icon_key, self.icons['stop']))
 
     def _initialize_fonts(self):
         """Initializes font objects based on settings."""
@@ -744,13 +858,15 @@ class PumpControlUI(tb.Window):
         self.mono_font = font.Font(family="Consolas", size=base_size)
         self.editor_font = font.Font(family="Segoe UI", size=editor_size)
         self.plot_title_font = font.Font(family="Segoe UI", size=plot_title_size, weight="bold")
+        self.menu_font = font.Font(family="Segoe UI", size=title_size + 2, weight="bold")
 
     def _configure_styles(self):
         """Configures the ttkbootstrap style system with custom fonts."""
         fonts = self.settings.get("fonts", {"default": 10, "title": 12, "plot_title": 12, "editor": 11})
         editor_size = fonts.get("editor", 11)
 
-        self.style.configure('TLabelFrame.Label', font=self.title_font)
+        # Ensure label frame titles honor the Panel Title Size setting
+        self.style.configure('TLabelframe.Label', font=self.title_font)
         self.style.configure('Treeview', rowheight=int(editor_size * 2.5), font=self.editor_font,
                              bordercolor=self.style.colors.light, borderwidth=1, relief='solid')
         # Style with light grid lines for the sequence editor
@@ -761,10 +877,34 @@ class PumpControlUI(tb.Window):
         self.style.map('Treeview', background=[('selected', self.style.colors.primary)])
         self.style.configure("Disabled.Treeview", foreground='gray')
 
+    def _set_direction_tag_colors(self):
+        if hasattr(self, 'sequence_tree'):
+            from ttkbootstrap import colorutils
+            colors = self.style.colors
+            fwd = colorutils.update_hsl_value(
+                colors.info,
+                lum=90,
+                inmodel=colorutils.HEX,
+                outmodel=colorutils.HEX,
+            )
+            rev = colorutils.update_hsl_value(
+                colors.danger,
+                lum=90,
+                inmodel=colorutils.HEX,
+                outmodel=colorutils.HEX,
+            )
+            self.sequence_tree.tag_configure('forward', background=fwd)
+            self.sequence_tree.tag_configure('backward', background=rev)
+            self.sequence_tree.tag_configure('disabled', foreground='red')
+
     def _update_styles_and_widgets(self):
         """Re-initializes fonts, re-configures styles, and updates widgets."""
         self._initialize_fonts()
         self._configure_styles()
+        self._apply_icon_colors()
+        self._set_direction_tag_colors()
+        if hasattr(self, '_menu_bar'):
+            self._create_menu()
         # Update widgets that depend on these styles
         if hasattr(self, 'sequence_tree'):
             self._update_treeview()
@@ -779,7 +919,7 @@ class PumpControlUI(tb.Window):
         self.log_text.config(font=self.small_font)
 
     def _update_plot_style(self):
-        if not hasattr(self, 'ax'): return
+        if not hasattr(self, 'ax_overview'): return
         try:
             colors = self.style.colors
             bg, fg, grid_c = colors.get('bg'), colors.get('fg'), colors.get('light')
@@ -788,19 +928,24 @@ class PumpControlUI(tb.Window):
             title_fp = FontProperties(family=self.plot_title_font.cget("family"), size=self.plot_title_font.cget("size"),
                                       weight=self.plot_title_font.cget("weight"))
 
-            self.fig.set_facecolor(bg)
-            self.ax.set_facecolor(bg)
-            for spine in self.ax.spines.values(): spine.set_color(fg)
-            self.ax.tick_params(axis='x', colors=fg, labelsize=self.small_font.cget("size"))
-            self.ax.tick_params(axis='y', colors=fg, labelsize=self.small_font.cget("size"))
-            self.ax.yaxis.label.set_color(fg);
-            self.ax.yaxis.label.set_fontproperties(default_fp)
-            self.ax.xaxis.label.set_color(fg);
-            self.ax.xaxis.label.set_fontproperties(default_fp)
-            self.ax.title.set_color(fg);
-            self.ax.title.set_fontproperties(title_fp)
-            self.ax.grid(True, linestyle='--', color=grid_c, alpha=0.6)
-            self.canvas.draw()
+            for fig, ax, canvas in (
+                (self.fig_overview, self.ax_overview, self.canvas_overview),
+                (self.fig_live, self.ax_live, self.canvas_live),
+            ):
+                fig.set_facecolor(bg)
+                ax.set_facecolor(bg)
+                for spine in ax.spines.values():
+                    spine.set_color(fg)
+                ax.tick_params(axis='x', colors=fg, labelsize=self.small_font.cget("size"))
+                ax.tick_params(axis='y', colors=fg, labelsize=self.small_font.cget("size"))
+                ax.yaxis.label.set_color(fg)
+                ax.yaxis.label.set_fontproperties(default_fp)
+                ax.xaxis.label.set_color(fg)
+                ax.xaxis.label.set_fontproperties(default_fp)
+                ax.title.set_color(fg)
+                ax.title.set_fontproperties(title_fp)
+                ax.grid(True, linestyle='--', color=grid_c, alpha=0.6)
+                canvas.draw()
         except Exception as e:
             print(f"Warning: Failed to update plot style: {e}")
 
@@ -844,7 +989,9 @@ class PumpControlUI(tb.Window):
 
     def _create_menu(self):
         menu_bar = tb.Menu(self)
+        menu_bar.configure(font=self.menu_font)
         self.config(menu=menu_bar)
+        self._menu_bar = menu_bar
 
         # File Menu
         file_menu = tb.Menu(menu_bar, tearoff=0)
@@ -864,7 +1011,7 @@ class PumpControlUI(tb.Window):
                               command=self._open_settings)
         file_menu.add_separator()
         file_menu.add_command(label=" Exit", image=self.icons['exit'], compound=LEFT, command=self._on_closing)
-        menu_bar.add_cascade(label="File", menu=file_menu)
+        menu_bar.add_cascade(label="  File  ", menu=file_menu)
 
         # Edit Menu
         edit_menu = tb.Menu(menu_bar, tearoff=0)
@@ -877,7 +1024,7 @@ class PumpControlUI(tb.Window):
         edit_menu.add_separator()
         edit_menu.add_command(label=" Batch Edit Phases...", image=self.icons['batch_edit'], compound=LEFT,
                               command=self._batch_edit_items)
-        menu_bar.add_cascade(label="Edit", menu=edit_menu)
+        menu_bar.add_cascade(label="  Edit  ", menu=edit_menu)
 
         # Templates Menu
         self.templates_menu = tb.Menu(menu_bar, tearoff=0)
@@ -888,21 +1035,24 @@ class PumpControlUI(tb.Window):
         self.templates_menu.add_cascade(label=" Insert Template", menu=self.insert_template_menu,
                                         image=self.icons['template_load'], compound=LEFT)
         self._update_templates_menu()
-        menu_bar.add_cascade(label="Templates", menu=self.templates_menu)
+        menu_bar.add_cascade(label="  Templates  ", menu=self.templates_menu)
 
         # View Menu
         view_menu = tb.Menu(menu_bar, tearoff=0)
+        from ttkbootstrap.themes import standard
         theme_submenu = tb.Menu(view_menu, tearoff=0)
         for theme in self.style.theme_names():
-            theme_submenu.add_command(label=theme.capitalize(), command=lambda t=theme: self._set_theme(t))
+            t_type = standard.STANDARD_THEMES.get(theme, {}).get('type', 'light')
+            label = f"{theme.capitalize()} ({t_type.capitalize()})"
+            theme_submenu.add_command(label=label, command=lambda t=theme: self._set_theme(t))
         view_menu.add_cascade(label="Theme", menu=theme_submenu)
-        menu_bar.add_cascade(label="View", menu=view_menu)
+        menu_bar.add_cascade(label="  View  ", menu=view_menu)
 
         # Help Menu
         help_menu = tb.Menu(menu_bar, tearoff=0)
         help_menu.add_command(label=" About", image=self.icons['about'], compound=LEFT,
                               command=lambda: AboutDialog(self))
-        menu_bar.add_cascade(label="Help", menu=help_menu)
+        menu_bar.add_cascade(label="  Help  ", menu=help_menu)
 
     def _update_recent_files_menu(self):
         self.recent_files_menu.delete(0, END)
@@ -1042,6 +1192,9 @@ class PumpControlUI(tb.Window):
         self.sequence_tree.pack(side=LEFT, fill=BOTH, expand=True)
         self.sequence_tree.configure(yscrollcommand=vsb.set)
 
+        # Color coding for directions
+        self._set_direction_tag_colors()
+
         self.sequence_tree.bind("<Double-1>", self._edit_item)
         self.sequence_tree.bind("<Button-3>", self._show_context_menu)
         self.sequence_tree.bind("<<TreeviewSelect>>", self._on_tree_select)
@@ -1075,11 +1228,29 @@ class PumpControlUI(tb.Window):
 
         plot_frame = tb.LabelFrame(self.plot_pane, text="Sequence Preview & Live Run", padding=(10, 5))
         self.plot_pane.add(plot_frame, weight=3)
-        self.fig = Figure(figsize=(9, 2), dpi=100)
-        self.ax = self.fig.add_subplot(111)
-        self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
-        self.canvas.get_tk_widget().pack(side=TOP, fill=BOTH, expand=True)
-        self.fig.tight_layout(pad=0.5)
+
+        self.plot_tabs = tb.Notebook(plot_frame)
+        self.plot_tabs.pack(fill=BOTH, expand=True)
+
+        overview_tab = tb.Frame(self.plot_tabs)
+        live_tab = tb.Frame(self.plot_tabs)
+        self.plot_tabs.add(overview_tab, text="Overview")
+        self.plot_tabs.add(live_tab, text="Live Track")
+
+        self.fig_overview = Figure(figsize=(9, 2), dpi=100)
+        self.ax_overview = self.fig_overview.add_subplot(111)
+        self.canvas_overview = FigureCanvasTkAgg(self.fig_overview, master=overview_tab)
+        self.canvas_overview.get_tk_widget().pack(side=TOP, fill=BOTH, expand=True)
+        self.fig_overview.tight_layout(pad=0.5)
+
+        self.fig_live = Figure(figsize=(9, 2), dpi=100)
+        self.ax_live = self.fig_live.add_subplot(111)
+        self.canvas_live = FigureCanvasTkAgg(self.fig_live, master=live_tab)
+        self.canvas_live.get_tk_widget().pack(side=TOP, fill=BOTH, expand=True)
+        self.fig_live.tight_layout(pad=0.5)
+
+        ToolTip(self.canvas_overview.get_tk_widget(), "Overview of the full sequence")
+        ToolTip(self.canvas_live.get_tk_widget(), "Live tracking of the current step")
 
         plot_btn_frame = tb.Frame(plot_frame)
         plot_btn_frame.pack(fill=X, pady=(5, 0))
@@ -1092,14 +1263,12 @@ class PumpControlUI(tb.Window):
         ToolTip(plot_btn_frame.winfo_children()[-1], "Export sequence data as CSV")
 
         self.live_track_var = tk.BooleanVar(value=False)
-        track_btn = tb.Checkbutton(plot_btn_frame, text="Live Track", variable=self.live_track_var,
-                                   bootstyle="round-toggle", command=self._toggle_live_track)
-        track_btn.pack(side=LEFT, padx=5)
-        ToolTip(track_btn, "Toggle live tracking to focus on the current progress.")
+        self.plot_tabs.bind("<<NotebookTabChanged>>", self._on_plot_tab_change)
+        self._on_plot_tab_change()  # Initialize state
 
     def _create_log_panel(self, parent):
         frame = tb.LabelFrame(parent, text="Log", padding=(10, 5))
-        frame.pack(side=BOTTOM, fill=BOTH, expand=True, padx=5, pady=(0, 5))
+        frame.pack(side=BOTTOM, fill=BOTH, expand=False, padx=5, pady=(0, 5))
 
         log_controls = tb.Frame(frame)
         log_controls.pack(fill=X)
@@ -1113,7 +1282,7 @@ class PumpControlUI(tb.Window):
         self.log_search_entry.bind("<KeyRelease>", self._apply_log_filter)
 
         log_text_frame = tb.Frame(frame)
-        log_text_frame.pack(fill=BOTH, expand=True, pady=(5, 0))
+        log_text_frame.pack(fill=BOTH, expand=False, pady=(5, 0))
         self.log_text = tb.Text(log_text_frame, height=6, state=DISABLED, wrap=WORD, font=self.small_font)
         vsb = tb.Scrollbar(log_text_frame, orient=VERTICAL, command=self.log_text.yview, bootstyle="round-secondary")
         self.log_text.configure(yscrollcommand=vsb.set)
@@ -1126,6 +1295,7 @@ class PumpControlUI(tb.Window):
         self.status_label = tb.Label(status_bar, text=" Status: Disconnected", image=self.icons['stop'], compound=LEFT,
                                      bootstyle="inverse-secondary", padding=5)
         self.status_label.pack(side=LEFT)
+        self.status_icon_key = 'stop'
         self.status_filename = tb.Label(status_bar, text="New Sequence*", bootstyle="inverse-secondary", padding=5)
         self.status_filename.pack(side=LEFT, padx=10)
         self.status_info = tb.Label(status_bar, text="", bootstyle="inverse-secondary", padding=5, font=self.small_font)
@@ -1289,6 +1459,7 @@ class PumpControlUI(tb.Window):
                     self.is_connected = True
                     self.status_label.config(text=" Status: Connected", image=self.icons['play'],
                                              bootstyle="inverse-success")
+                    self.status_icon_key = 'play'
                     self.settings['last_com_port'] = self.com_port_cb.get()
                     self.settings['unit_id'] = self.unit_id_entry.get()
                     self._send_pump_command("SR")
@@ -1297,6 +1468,7 @@ class PumpControlUI(tb.Window):
                     self.is_running_sequence = False  # Force stop if disconnected
                     self.status_label.config(text=" Status: Disconnected", image=self.icons['stop'],
                                              bootstyle="inverse-secondary")
+                    self.status_icon_key = 'stop'
                 self._update_ui_states()
         finally:
             self.after(100, self._process_results)
@@ -1370,6 +1542,7 @@ class PumpControlUI(tb.Window):
         with self._busy_cursor():
             self.status_label.config(text=" Status: Connecting...", image=self.icons['refresh'],
                                      bootstyle="inverse-info")
+            self.status_icon_key = 'refresh'
             self.update_idletasks()
             self.command_queue.put({"action": "connect", "port": port, "unit_id": unit_id, "baudrate": 19200})
 
@@ -1381,6 +1554,7 @@ class PumpControlUI(tb.Window):
         rpm = float(value)
         self.manual_rpm_entry.delete(0, END)
         self.manual_rpm_entry.insert(0, f"{rpm:.1f}")
+        self._update_dyn_label(rpm)
 
     def _set_rpm_from_entry(self, event=None):
         try:
@@ -1389,6 +1563,7 @@ class PumpControlUI(tb.Window):
                 messagebox.showwarning("Invalid RPM", "Please enter a value between 0 and 48.")
                 return
             self.speed_scale.set(rpm)
+            self._update_dyn_label(rpm)
         except (ValueError, tk.TclError):
             messagebox.showwarning("Invalid Input", "Please enter a valid number for RPM.")
 
@@ -1398,6 +1573,8 @@ class PumpControlUI(tb.Window):
         self._send_pump_command("K>")
         self.fwd_btn.config(bootstyle="primary")  # Visual feedback
         self.rev_btn.config(bootstyle="primary-outline")
+        self.current_rpm = float(self.speed_scale.get())
+        self._update_dyn_label(self.current_rpm)
 
     def _manual_start_rev(self):
         self._set_rpm_from_entry()
@@ -1405,11 +1582,15 @@ class PumpControlUI(tb.Window):
         self._send_pump_command("K<")
         self.rev_btn.config(bootstyle="primary")
         self.fwd_btn.config(bootstyle="primary-outline")
+        self.current_rpm = float(self.speed_scale.get())
+        self._update_dyn_label(self.current_rpm)
 
     def _manual_stop(self):
         self._send_pump_command("KH")
         self.fwd_btn.config(bootstyle="primary-outline")
         self.rev_btn.config(bootstyle="primary-outline")
+        self.current_rpm = 0.0
+        self._update_dyn_label(0.0)
 
     # --- Sequence Editor Logic ---
     def _add_phase(self):
@@ -1567,9 +1748,19 @@ class PumpControlUI(tb.Window):
                 icon = "↻"
                 details = f"Loop Phases {step['start_phase']}-{step['end_phase']} ({step['repeats']} times)"
 
-            tags = () if is_enabled else ("disabled",)
+            tags = []
+            if step['type'] == 'Phase':
+                tags.append('forward' if step['direction'] == 'Forward' else 'backward')
+            if not is_enabled:
+                tags.append('disabled')
 
-            self.sequence_tree.insert("", END, iid=i, values=(i + 1, icon, step['type'], details, duration), tags=tags)
+            self.sequence_tree.insert(
+                "",
+                END,
+                iid=i,
+                values=(i + 1, icon, step['type'], details, duration),
+                tags=tuple(tags),
+            )
 
         # Restore selection
         for iid in selected_iids:
@@ -1584,30 +1775,10 @@ class PumpControlUI(tb.Window):
     def _update_total_duration(self):
         total_s = self._calculate_total_duration(include_disabled=False)
         duration_str = str(timedelta(seconds=int(total_s)))
-        self.total_duration_label.config(text=f"Total Duration: {duration_str}")
+        self.total_duration_label.config(text=f"Total: {duration_str} / {duration_str}")
 
-        # Update dynamic pressure estimation
-        try:
-            vol_per_rev = float(self.settings.get("vol_per_rev_ul", 25.0))
-            tube_id_mm = float(self.settings.get("tube_inner_diameter_mm", 1.0))
-            total_revs = 0
-            flat_sequence = self._flatten_sequence_for_plot(include_disabled=False)
-            for step in flat_sequence:
-                duration_s = step['duration'] * ({'s': 1, 'min': 60, 'hr': 3600}.get(step['unit'], 1))
-                avg_rpm = step['rpm']
-                total_revs += (avg_rpm / 60) * duration_s
-
-            total_vol_ul = total_revs * vol_per_rev
-            flow_rate_m3_s = (total_vol_ul * 1e-9) / total_s if total_s > 0 else 0
-            diameter_m = tube_id_mm / 1000
-            area_m2 = math.pi * (diameter_m / 2) ** 2
-            velocity_m_s = flow_rate_m3_s / area_m2 if area_m2 > 0 else 0
-            rho = 1000  # density of water kg/m^3
-            q_pa = 0.5 * rho * velocity_m_s ** 2
-            dyn_cm2 = q_pa * 10
-            self.dyn_label.config(text=f"Dyn: {dyn_cm2:.2f} dyn/cm²")
-        except Exception:
-            self.dyn_label.config(text="Dyn: N/A")
+        # Update shear stress based on current rpm
+        self._update_dyn_label(self.current_rpm)
 
     def _mark_dirty(self, dirty_state):
         self.is_dirty = dirty_state
@@ -1626,9 +1797,16 @@ class PumpControlUI(tb.Window):
         else:
             self._update_plot()
 
+    def _on_plot_tab_change(self, event=None):
+        current = self.plot_tabs.index("current") if hasattr(self, "plot_tabs") else 0
+        self.live_track_var.set(current == 1)
+        if not self.is_running_sequence:
+            self._update_plot()
+
     def _update_plot(self, as_plan_background=False):
-        if not hasattr(self, 'ax'): return
-        self.ax.clear()
+        if not hasattr(self, 'ax_overview'): return
+        for ax in (self.ax_overview, self.ax_live):
+            ax.clear()
         colors = self.style.colors
         fwd_color, rev_color = colors.info, colors.danger
 
@@ -1639,7 +1817,8 @@ class PumpControlUI(tb.Window):
             for step in disabled_flat_seq:
                 duration_s = step['duration'] * ({'s': 1, 'min': 60, 'hr': 3600}.get(step['unit'], 1))
                 end_t, end_rpm = current_time + duration_s, step['rpm']
-                self.ax.plot([current_time, end_t], [step['rpm'], end_rpm], color='gray', linestyle=':', linewidth=1)
+                for ax in (self.ax_overview, self.ax_live):
+                    ax.plot([current_time, end_t], [step['rpm'], end_rpm], color='gray', linestyle=':', linewidth=1)
                 current_time, current_rpm = end_t, end_rpm
         except RecursionError:
             pass  # Ignore if disabled part has loops
@@ -1648,8 +1827,9 @@ class PumpControlUI(tb.Window):
         if as_plan_background:
             plan_color, plan_style = colors.secondary, '--'
         else:
-            self.ax.plot([], [], color=fwd_color, label='Forward', linewidth=2)
-            self.ax.plot([], [], color=rev_color, label='Backward', linewidth=2)
+            for ax in (self.ax_overview, self.ax_live):
+                ax.plot([], [], color=fwd_color, label='Forward', linewidth=2)
+                ax.plot([], [], color=rev_color, label='Backward', linewidth=2)
             plan_style = '-'
 
         current_time, current_rpm = 0.0, 0.0
@@ -1663,70 +1843,84 @@ class PumpControlUI(tb.Window):
                 start_t, end_t = current_time, current_time + duration_s
                 start_rpm, end_rpm = current_rpm, step['rpm']
 
-                if step['mode'] == 'Fixed':
-                    self.ax.plot([start_t, start_t], [start_rpm, end_rpm], color=plot_color, linestyle=':',
-                                 linewidth=1.5)
-                    self.ax.plot([start_t, end_t], [end_rpm, end_rpm], color=plot_color, linestyle=plan_style,
-                                 linewidth=2)
-                elif step['mode'] == 'Ramp':
-                    self.ax.plot([start_t, end_t], [start_rpm, end_rpm], color=plot_color, linestyle=plan_style,
-                                 linewidth=2)
+                for ax in (self.ax_overview, self.ax_live):
+                    if step['mode'] == 'Fixed':
+                        ax.plot([start_t, start_t], [start_rpm, end_rpm], color=plot_color, linestyle=':',
+                                linewidth=1.5)
+                        ax.plot([start_t, end_t], [end_rpm, end_rpm], color=plot_color, linestyle=plan_style,
+                                linewidth=2)
+                    elif step['mode'] == 'Ramp':
+                        ax.plot([start_t, end_t], [start_rpm, end_rpm], color=plot_color, linestyle=plan_style,
+                                linewidth=2)
 
                 current_rpm, current_time = end_rpm, end_t
         except RecursionError:
-            self.ax.text(0.5, 0.5, 'Error: Infinite loop in sequence.', transform=self.ax.transAxes, color='red',
-                         ha='center', va='center')
+            for ax in (self.ax_overview, self.ax_live):
+                ax.text(0.5, 0.5, 'Error: Infinite loop in sequence.', transform=ax.transAxes, color='red',
+                        ha='center', va='center')
 
-        self.ax.set_xlabel("Time (s)");
-        self.ax.set_ylabel("RPM")
-        self.ax.set_title("Sequence RPM Profile" if not as_plan_background else "Sequence Live Run")
-        if not as_plan_background and (self.sequence_data or self.plot_is_live):
-            legend = self.ax.legend(prop={'size': self.small_font.cget("size")})
-            for text in legend.get_texts(): text.set_color(colors.fg)
-            frame = legend.get_frame();
-            frame.set_facecolor(colors.bg);
-            frame.set_edgecolor(colors.fg)
-
-        self.fig.tight_layout(pad=1.0, h_pad=0.5, w_pad=0.5)
-        self.canvas.draw()
+        for ax, fig in ((self.ax_overview, self.fig_overview), (self.ax_live, self.fig_live)):
+            ax.set_xlabel("Time (s)")
+            ax.set_ylabel("RPM")
+            ax.set_title("Sequence RPM Profile" if not as_plan_background else "Sequence Live Run")
+            if not as_plan_background and (self.sequence_data or self.plot_is_live):
+                legend = ax.legend(prop={'size': self.small_font.cget("size")})
+                for text in legend.get_texts():
+                    text.set_color(colors.fg)
+                frame = legend.get_frame()
+                frame.set_facecolor(colors.bg)
+                frame.set_edgecolor(colors.fg)
+            fig.tight_layout(pad=1.0, h_pad=0.5, w_pad=0.5)
+        self.canvas_overview.draw()
+        self.canvas_live.draw()
         self._update_plot_style()
 
     def _update_actual_plot(self, time_pos, rpm_pos, direction):
-        if not hasattr(self, 'ax') or not self.plot_is_live: return
+        if not hasattr(self, 'ax_overview') or not self.plot_is_live:
+            return
+
         colors = self.style.colors
-        color = colors.get('success')
+        color = colors.info if direction == 'Forward' else colors.danger
 
         if direction != self.last_plot_direction:
             self.last_plot_direction = direction
             self.actual_plot_data = {"time": [time_pos], "rpm": [rpm_pos]}
-            self.actual_plot_line, = self.ax.plot(self.actual_plot_data["time"], self.actual_plot_data["rpm"],
-                                                  color=color, linewidth=2.5, alpha=0.8, label="Actual")
+            self.actual_plot_line_overview, = self.ax_overview.plot(
+                self.actual_plot_data["time"], self.actual_plot_data["rpm"],
+                color=color, linewidth=2.5, alpha=0.8, label="Actual")
+            self.actual_plot_line_live, = self.ax_live.plot(
+                self.actual_plot_data["time"], self.actual_plot_data["rpm"],
+                color=color, linewidth=2.5, alpha=0.8, label="Actual")
         else:
             self.actual_plot_data["time"].append(time_pos)
             self.actual_plot_data["rpm"].append(rpm_pos)
-            self.actual_plot_line.set_data(self.actual_plot_data["time"], self.actual_plot_data["rpm"])
+            self.actual_plot_line_overview.set_data(self.actual_plot_data["time"], self.actual_plot_data["rpm"])
+            self.actual_plot_line_live.set_data(self.actual_plot_data["time"], self.actual_plot_data["rpm"])
 
         if self.live_track_var.get():
-            window_seconds = 60
-            self.ax.set_xlim(max(0, time_pos - window_seconds), time_pos + 10)
-            self.ax.relim()
-            self.ax.autoscale_view(scalex=False, scaley=True)
+            self.ax_live.set_xlim(self.live_phase_start, self.live_phase_end)
+            self.ax_live.relim()
+            self.ax_live.autoscale_view(scalex=False, scaley=True)
         else:
-            self.ax.relim()
-            self.ax.autoscale_view()
+            self.ax_live.relim()
+            self.ax_live.autoscale_view()
 
-        self.canvas.draw_idle()
+        for ax in (self.ax_overview, self.ax_live):
+            ax.figure.canvas.draw_idle()
 
     def _export_plot_image(self):
-        if not hasattr(self, 'fig'): return
+        if not hasattr(self, 'fig_overview'):
+            return
+        fig = self.fig_overview if self.plot_tabs.index('current') == 0 else self.fig_live
         fp = filedialog.asksaveasfilename(
             defaultextension=".png",
             filetypes=[("PNG Image", "*.png"), ("JPEG Image", "*.jpg"), ("SVG Vector", "*.svg")],
             title="Save Plot as Image"
         )
-        if not fp: return
+        if not fp:
+            return
         try:
-            self.fig.savefig(fp, dpi=300, facecolor=self.fig.get_facecolor())
+            fig.savefig(fp, dpi=300, facecolor=fig.get_facecolor())
             self._log(f"Plot saved to {fp}", "INFO")
         except Exception as e:
             messagebox.showerror("Export Failed", f"Could not save image: {e}")
@@ -1822,6 +2016,8 @@ class PumpControlUI(tb.Window):
         self._update_plot(as_plan_background=True)
         self.actual_plot_data = {"time": [0], "rpm": [0]}
         self.last_plot_direction = None
+        self.live_phase_start = 0.0
+        self.live_phase_end = 0.0
 
         self.stop_event.clear()
         self.pause_event.clear()
@@ -1853,6 +2049,10 @@ class PumpControlUI(tb.Window):
             instruction = self.sequence_data[pc]
             if instruction['type'] == 'Phase':
                 phase_start_time = cumulative_time
+                self.live_phase_start = phase_start_time
+                self.live_phase_end = phase_start_time + (
+                    instruction['duration'] * ({'s': 1, 'min': 60, 'hr': 3600}.get(instruction['unit'], 1))
+                )
                 for time_in_phase, rpm_in_phase, direction in self._execute_phase(instruction):
                     if self.stop_event.is_set(): break
                     pause_start_time = time.time()
@@ -1862,6 +2062,7 @@ class PumpControlUI(tb.Window):
 
                     cumulative_time = phase_start_time + time_in_phase
                     self.after(0, self._update_actual_plot, cumulative_time, rpm_in_phase, direction)
+                    self.after(0, self._update_dyn_label, rpm_in_phase)
                     self.current_rpm = rpm_in_phase
                 if self.stop_event.is_set(): break
                 duration_s = instruction['duration'] * ({'s': 1, 'min': 60, 'hr': 3600}.get(instruction['unit'], 1))
@@ -1914,6 +2115,7 @@ class PumpControlUI(tb.Window):
 
             yield elapsed, current_rpm_in_phase, direction
             self._update_progress_bars(elapsed, duration_s, time_before_phase, total_duration_global)
+            self.after(0, self._update_dyn_label, current_rpm_in_phase)
 
         if not self.stop_event.is_set(): self._send_pump_command(f"R{int(phase['rpm'] * 100):03}")
 
@@ -1929,6 +2131,10 @@ class PumpControlUI(tb.Window):
             self.step_progress.config(value=step_prog)
             self.total_progress.config(value=total_prog)
             self.step_time_label.config(text=f"Step time: {elapsed_str} / {duration_str}")
+            remaining_total = max(0, duration_total - (time_before + elapsed_step))
+            total_str = str(timedelta(seconds=int(duration_total)))
+            remaining_str = str(timedelta(seconds=int(remaining_total)))
+            self.total_duration_label.config(text=f"Total: {remaining_str} / {total_str}")
 
         self.after(0, _update)
 
@@ -1939,6 +2145,25 @@ class PumpControlUI(tb.Window):
         except RecursionError:
             return 0
 
+    def _calculate_shear_stress(self, rpm):
+        try:
+            eta = float(self.settings.get("dynamic_viscosity", DEFAULT_VISCOSITY))
+            p_const = float(self.settings.get(
+                "chamber_p_value",
+                CHAMBER_COEFFICIENTS.get(self.settings.get("chamber_type", DEFAULT_CHAMBER), 176.1),
+            ))
+            k_coeff = float(self.settings.get("tube_coefficient", DEFAULT_TUBE_COEFFICIENT))
+            return eta * p_const * (k_coeff * rpm)
+        except Exception:
+            return None
+
+    def _update_dyn_label(self, rpm):
+        tau = self._calculate_shear_stress(rpm)
+        if tau is None:
+            self.dyn_label.config(text="Dyn: N/A")
+        else:
+            self.dyn_label.config(text=f"Dyn: {tau:.2f} dyn/cm²")
+
     def _on_sequence_finish(self):
         self.is_running_sequence = False
         self.is_paused = False
@@ -1947,6 +2172,8 @@ class PumpControlUI(tb.Window):
         self.total_progress.config(value=0)
         self.after(100, self._update_plot)
         self._update_ui_states()
+        self.current_rpm = 0.0
+        self._update_dyn_label(0.0)
         self.pause_seq_btn.config(text=" Pause", image=self.icons['pause'])
         if self.stop_event.is_set():
             self._log("Sequence execution was stopped by user.", "INFO")
@@ -1958,6 +2185,8 @@ class PumpControlUI(tb.Window):
             self._send_pump_command("KH")  # Halt pump on pause
             self.pause_seq_btn.config(text=" Resume", image=self.icons['play'])
             self._log("Sequence paused.", "INFO")
+            self.current_rpm = 0.0
+            self._update_dyn_label(0.0)
         else:
             self.pause_event.clear()
             self.pause_seq_btn.config(text=" Pause", image=self.icons['pause'])
@@ -1969,6 +2198,8 @@ class PumpControlUI(tb.Window):
             self._send_pump_command("KH")
             self.stop_event.set()
             self.pause_event.clear()
+            self.current_rpm = 0.0
+            self._update_dyn_label(0.0)
 
     # --- File I/O & Templates ---
     def _confirm_unsaved_changes(self):
