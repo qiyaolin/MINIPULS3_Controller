@@ -1,0 +1,19 @@
+{
+    "recent_files": [
+        "C:/Users/qiyao/Downloads/12.json"
+    ],
+    "templates": {},
+    "fonts": {
+        "default": 13,
+        "title": 12,
+        "editor": 11
+    },
+    "theme": "litera",
+    "geometry": "1920x989+37+60",
+    "main_pane": 514,
+    "right_pane": 400,
+    "plot_pane": 491,
+    "autosave_interval_min": 5,
+    "tube_inner_diameter_mm": 1.0,
+    "vol_per_rev_ul": 25.0
+}
