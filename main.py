@@ -840,8 +840,18 @@ class PumpControlUI(tb.Window):
         if hasattr(self, 'sequence_tree'):
             from ttkbootstrap import colorutils
             colors = self.style.colors
-            fwd = colorutils.update_hsl_value(colors.info, lum=90, outmodel=colorutils.HEX)
-            rev = colorutils.update_hsl_value(colors.danger, lum=90, outmodel=colorutils.HEX)
+            fwd = colorutils.update_hsl_value(
+                colors.info,
+                lum=90,
+                inmodel=colorutils.HEX,
+                outmodel=colorutils.HEX,
+            )
+            rev = colorutils.update_hsl_value(
+                colors.danger,
+                lum=90,
+                inmodel=colorutils.HEX,
+                outmodel=colorutils.HEX,
+            )
             self.sequence_tree.tag_configure('forward', background=fwd)
             self.sequence_tree.tag_configure('backward', background=rev)
             self.sequence_tree.tag_configure('disabled', foreground='gray')
