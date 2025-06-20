@@ -16,5 +16,9 @@
     "plot_pane": 491,
     "autosave_interval_min": 5,
     "tube_inner_diameter_mm": 1.0,
-    "vol_per_rev_ul": 25.0
+    "vol_per_rev_ul": 25.0,
+    "dynamic_viscosity": 0.0070,
+    "tube_coefficient": 0.63,
+    "chamber_type": "µ-Slide VI 0.4",
+    "chamber_p_value": 176.1
 }
