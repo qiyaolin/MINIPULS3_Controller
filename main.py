@@ -479,10 +479,15 @@ class SettingsDialog(BaseDialog):
         # --- Fonts Tab ---
         f_fonts.columnconfigure(1, weight=1)
         self.font_vars = {}
-        font_settings = self.settings.get("fonts", {"default": 10, "title": 12, "editor": 11})
+        font_settings = self.settings.get("fonts", {"default": 10, "title": 12, "plot_title": 12, "editor": 11})
 
         for i, (key, text) in enumerate(
-                [('default', 'Default Size:'), ('title', 'Title Size:'), ('editor', 'Editor Size:')]):
+                [
+                    ('default', 'Default Size:'),
+                    ('title', 'Panel Title Size:'),
+                    ('plot_title', 'Plot Title Size:'),
+                    ('editor', 'Editor Size:')
+                ]):
             tb.Label(f_fonts, text=text).grid(row=i, column=0, sticky='w', pady=5)
             self.font_vars[key] = tk.IntVar(value=font_settings.get(key, 10))
             spinbox = tb.Spinbox(f_fonts, from_=8, to=24, textvariable=self.font_vars[key], width=5)
@@ -748,6 +753,10 @@ class PumpControlUI(tb.Window):
         self.style.configure('TLabelFrame.Label', font=self.title_font)
         self.style.configure('Treeview', rowheight=int(editor_size * 2.5), font=self.editor_font,
                              bordercolor=self.style.colors.light, borderwidth=1, relief='solid')
+        # Style with light grid lines for the sequence editor
+        self.style.configure('Table.Treeview', rowheight=int(editor_size * 2.5), font=self.editor_font,
+                             bordercolor=self.style.colors.light, borderwidth=1, relief='solid',
+                             rowbordercolor=self.style.colors.light, rowborderwidth=1)
         self.style.configure('Treeview.Heading', font=self.title_font)
         self.style.map('Treeview', background=[('selected', self.style.colors.primary)])
         self.style.configure("Disabled.Treeview", foreground='gray')
@@ -809,7 +818,9 @@ class PumpControlUI(tb.Window):
         self._create_connection_panel(left_panel.container)
         self._create_execution_panel(left_panel.container)
         self._create_manual_control_panel(left_panel.container)
-        self._create_log_panel(left_panel.container)
+
+        # Log panel should remain visible at the bottom of the left side
+        self._create_log_panel(left_wrapper)
 
         self.main_pane.after(100, lambda: self.main_pane.sashpos(0, self.settings.get("main_pane", 400)))
 
@@ -1019,7 +1030,8 @@ class PumpControlUI(tb.Window):
         tree_frame = tb.Frame(frame)
         tree_frame.pack(fill=BOTH, expand=True, pady=5)
         cols = ("#", " ", "Type", "Details", "Duration")
-        self.sequence_tree = tb.Treeview(tree_frame, columns=cols, show="headings", bootstyle="primary")
+        self.sequence_tree = tb.Treeview(tree_frame, columns=cols, show="headings",
+                                         bootstyle="primary", style="Table.Treeview")
         for col, width, anchor in zip(cols, [40, 25, 80, 400, 200], [CENTER, CENTER, W, W, W]):
             self.sequence_tree.heading(col, text=col)
             self.sequence_tree.column(col, width=width, anchor=anchor, stretch=False if col != "Details" else True)
@@ -1087,7 +1099,7 @@ class PumpControlUI(tb.Window):
 
     def _create_log_panel(self, parent):
         frame = tb.LabelFrame(parent, text="Log", padding=(10, 5))
-        frame.pack(fill=BOTH, expand=True, padx=5, pady=(0, 5))
+        frame.pack(side=BOTTOM, fill=BOTH, expand=True, padx=5, pady=(0, 5))
 
         log_controls = tb.Frame(frame)
         log_controls.pack(fill=X)
