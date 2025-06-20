@@ -919,7 +919,7 @@ class PumpControlUI(tb.Window):
         self.log_text.config(font=self.small_font)
 
     def _update_plot_style(self):
-        if not hasattr(self, 'ax'): return
+        if not hasattr(self, 'ax_overview'): return
         try:
             colors = self.style.colors
             bg, fg, grid_c = colors.get('bg'), colors.get('fg'), colors.get('light')
@@ -928,19 +928,24 @@ class PumpControlUI(tb.Window):
             title_fp = FontProperties(family=self.plot_title_font.cget("family"), size=self.plot_title_font.cget("size"),
                                       weight=self.plot_title_font.cget("weight"))
 
-            self.fig.set_facecolor(bg)
-            self.ax.set_facecolor(bg)
-            for spine in self.ax.spines.values(): spine.set_color(fg)
-            self.ax.tick_params(axis='x', colors=fg, labelsize=self.small_font.cget("size"))
-            self.ax.tick_params(axis='y', colors=fg, labelsize=self.small_font.cget("size"))
-            self.ax.yaxis.label.set_color(fg);
-            self.ax.yaxis.label.set_fontproperties(default_fp)
-            self.ax.xaxis.label.set_color(fg);
-            self.ax.xaxis.label.set_fontproperties(default_fp)
-            self.ax.title.set_color(fg);
-            self.ax.title.set_fontproperties(title_fp)
-            self.ax.grid(True, linestyle='--', color=grid_c, alpha=0.6)
-            self.canvas.draw()
+            for fig, ax, canvas in (
+                (self.fig_overview, self.ax_overview, self.canvas_overview),
+                (self.fig_live, self.ax_live, self.canvas_live),
+            ):
+                fig.set_facecolor(bg)
+                ax.set_facecolor(bg)
+                for spine in ax.spines.values():
+                    spine.set_color(fg)
+                ax.tick_params(axis='x', colors=fg, labelsize=self.small_font.cget("size"))
+                ax.tick_params(axis='y', colors=fg, labelsize=self.small_font.cget("size"))
+                ax.yaxis.label.set_color(fg)
+                ax.yaxis.label.set_fontproperties(default_fp)
+                ax.xaxis.label.set_color(fg)
+                ax.xaxis.label.set_fontproperties(default_fp)
+                ax.title.set_color(fg)
+                ax.title.set_fontproperties(title_fp)
+                ax.grid(True, linestyle='--', color=grid_c, alpha=0.6)
+                canvas.draw()
         except Exception as e:
             print(f"Warning: Failed to update plot style: {e}")
 
@@ -1223,11 +1228,29 @@ class PumpControlUI(tb.Window):
 
         plot_frame = tb.LabelFrame(self.plot_pane, text="Sequence Preview & Live Run", padding=(10, 5))
         self.plot_pane.add(plot_frame, weight=3)
-        self.fig = Figure(figsize=(9, 2), dpi=100)
-        self.ax = self.fig.add_subplot(111)
-        self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
-        self.canvas.get_tk_widget().pack(side=TOP, fill=BOTH, expand=True)
-        self.fig.tight_layout(pad=0.5)
+
+        self.plot_tabs = tb.Notebook(plot_frame)
+        self.plot_tabs.pack(fill=BOTH, expand=True)
+
+        overview_tab = tb.Frame(self.plot_tabs)
+        live_tab = tb.Frame(self.plot_tabs)
+        self.plot_tabs.add(overview_tab, text="Overview")
+        self.plot_tabs.add(live_tab, text="Live Track")
+
+        self.fig_overview = Figure(figsize=(9, 2), dpi=100)
+        self.ax_overview = self.fig_overview.add_subplot(111)
+        self.canvas_overview = FigureCanvasTkAgg(self.fig_overview, master=overview_tab)
+        self.canvas_overview.get_tk_widget().pack(side=TOP, fill=BOTH, expand=True)
+        self.fig_overview.tight_layout(pad=0.5)
+
+        self.fig_live = Figure(figsize=(9, 2), dpi=100)
+        self.ax_live = self.fig_live.add_subplot(111)
+        self.canvas_live = FigureCanvasTkAgg(self.fig_live, master=live_tab)
+        self.canvas_live.get_tk_widget().pack(side=TOP, fill=BOTH, expand=True)
+        self.fig_live.tight_layout(pad=0.5)
+
+        ToolTip(self.canvas_overview.get_tk_widget(), "Overview of the full sequence")
+        ToolTip(self.canvas_live.get_tk_widget(), "Live tracking of the current step")
 
         plot_btn_frame = tb.Frame(plot_frame)
         plot_btn_frame.pack(fill=X, pady=(5, 0))
@@ -1240,10 +1263,8 @@ class PumpControlUI(tb.Window):
         ToolTip(plot_btn_frame.winfo_children()[-1], "Export sequence data as CSV")
 
         self.live_track_var = tk.BooleanVar(value=False)
-        track_btn = tb.Checkbutton(plot_btn_frame, text="Live Track", variable=self.live_track_var,
-                                   bootstyle="round-toggle", command=self._toggle_live_track)
-        track_btn.pack(side=LEFT, padx=5)
-        ToolTip(track_btn, "Toggle live tracking to focus on the current progress.")
+        self.plot_tabs.bind("<<NotebookTabChanged>>", self._on_plot_tab_change)
+        self._on_plot_tab_change()  # Initialize state
 
     def _create_log_panel(self, parent):
         frame = tb.LabelFrame(parent, text="Log", padding=(10, 5))
@@ -1754,7 +1775,7 @@ class PumpControlUI(tb.Window):
     def _update_total_duration(self):
         total_s = self._calculate_total_duration(include_disabled=False)
         duration_str = str(timedelta(seconds=int(total_s)))
-        self.total_duration_label.config(text=f"Total Duration: {duration_str}")
+        self.total_duration_label.config(text=f"Total: {duration_str} / {duration_str}")
 
         # Update shear stress based on current rpm
         self._update_dyn_label(self.current_rpm)
@@ -1776,9 +1797,16 @@ class PumpControlUI(tb.Window):
         else:
             self._update_plot()
 
+    def _on_plot_tab_change(self, event=None):
+        current = self.plot_tabs.index("current") if hasattr(self, "plot_tabs") else 0
+        self.live_track_var.set(current == 1)
+        if not self.is_running_sequence:
+            self._update_plot()
+
     def _update_plot(self, as_plan_background=False):
-        if not hasattr(self, 'ax'): return
-        self.ax.clear()
+        if not hasattr(self, 'ax_overview'): return
+        for ax in (self.ax_overview, self.ax_live):
+            ax.clear()
         colors = self.style.colors
         fwd_color, rev_color = colors.info, colors.danger
 
@@ -1789,7 +1817,8 @@ class PumpControlUI(tb.Window):
             for step in disabled_flat_seq:
                 duration_s = step['duration'] * ({'s': 1, 'min': 60, 'hr': 3600}.get(step['unit'], 1))
                 end_t, end_rpm = current_time + duration_s, step['rpm']
-                self.ax.plot([current_time, end_t], [step['rpm'], end_rpm], color='gray', linestyle=':', linewidth=1)
+                for ax in (self.ax_overview, self.ax_live):
+                    ax.plot([current_time, end_t], [step['rpm'], end_rpm], color='gray', linestyle=':', linewidth=1)
                 current_time, current_rpm = end_t, end_rpm
         except RecursionError:
             pass  # Ignore if disabled part has loops
@@ -1798,8 +1827,9 @@ class PumpControlUI(tb.Window):
         if as_plan_background:
             plan_color, plan_style = colors.secondary, '--'
         else:
-            self.ax.plot([], [], color=fwd_color, label='Forward', linewidth=2)
-            self.ax.plot([], [], color=rev_color, label='Backward', linewidth=2)
+            for ax in (self.ax_overview, self.ax_live):
+                ax.plot([], [], color=fwd_color, label='Forward', linewidth=2)
+                ax.plot([], [], color=rev_color, label='Backward', linewidth=2)
             plan_style = '-'
 
         current_time, current_rpm = 0.0, 0.0
@@ -1813,70 +1843,84 @@ class PumpControlUI(tb.Window):
                 start_t, end_t = current_time, current_time + duration_s
                 start_rpm, end_rpm = current_rpm, step['rpm']
 
-                if step['mode'] == 'Fixed':
-                    self.ax.plot([start_t, start_t], [start_rpm, end_rpm], color=plot_color, linestyle=':',
-                                 linewidth=1.5)
-                    self.ax.plot([start_t, end_t], [end_rpm, end_rpm], color=plot_color, linestyle=plan_style,
-                                 linewidth=2)
-                elif step['mode'] == 'Ramp':
-                    self.ax.plot([start_t, end_t], [start_rpm, end_rpm], color=plot_color, linestyle=plan_style,
-                                 linewidth=2)
+                for ax in (self.ax_overview, self.ax_live):
+                    if step['mode'] == 'Fixed':
+                        ax.plot([start_t, start_t], [start_rpm, end_rpm], color=plot_color, linestyle=':',
+                                linewidth=1.5)
+                        ax.plot([start_t, end_t], [end_rpm, end_rpm], color=plot_color, linestyle=plan_style,
+                                linewidth=2)
+                    elif step['mode'] == 'Ramp':
+                        ax.plot([start_t, end_t], [start_rpm, end_rpm], color=plot_color, linestyle=plan_style,
+                                linewidth=2)
 
                 current_rpm, current_time = end_rpm, end_t
         except RecursionError:
-            self.ax.text(0.5, 0.5, 'Error: Infinite loop in sequence.', transform=self.ax.transAxes, color='red',
-                         ha='center', va='center')
+            for ax in (self.ax_overview, self.ax_live):
+                ax.text(0.5, 0.5, 'Error: Infinite loop in sequence.', transform=ax.transAxes, color='red',
+                        ha='center', va='center')
 
-        self.ax.set_xlabel("Time (s)");
-        self.ax.set_ylabel("RPM")
-        self.ax.set_title("Sequence RPM Profile" if not as_plan_background else "Sequence Live Run")
-        if not as_plan_background and (self.sequence_data or self.plot_is_live):
-            legend = self.ax.legend(prop={'size': self.small_font.cget("size")})
-            for text in legend.get_texts(): text.set_color(colors.fg)
-            frame = legend.get_frame();
-            frame.set_facecolor(colors.bg);
-            frame.set_edgecolor(colors.fg)
-
-        self.fig.tight_layout(pad=1.0, h_pad=0.5, w_pad=0.5)
-        self.canvas.draw()
+        for ax, fig in ((self.ax_overview, self.fig_overview), (self.ax_live, self.fig_live)):
+            ax.set_xlabel("Time (s)")
+            ax.set_ylabel("RPM")
+            ax.set_title("Sequence RPM Profile" if not as_plan_background else "Sequence Live Run")
+            if not as_plan_background and (self.sequence_data or self.plot_is_live):
+                legend = ax.legend(prop={'size': self.small_font.cget("size")})
+                for text in legend.get_texts():
+                    text.set_color(colors.fg)
+                frame = legend.get_frame()
+                frame.set_facecolor(colors.bg)
+                frame.set_edgecolor(colors.fg)
+            fig.tight_layout(pad=1.0, h_pad=0.5, w_pad=0.5)
+        self.canvas_overview.draw()
+        self.canvas_live.draw()
         self._update_plot_style()
 
     def _update_actual_plot(self, time_pos, rpm_pos, direction):
-        if not hasattr(self, 'ax') or not self.plot_is_live: return
+        if not hasattr(self, 'ax_overview') or not self.plot_is_live:
+            return
+
         colors = self.style.colors
-        color = colors.get('success')
+        color = colors.info if direction == 'Forward' else colors.danger
 
         if direction != self.last_plot_direction:
             self.last_plot_direction = direction
             self.actual_plot_data = {"time": [time_pos], "rpm": [rpm_pos]}
-            self.actual_plot_line, = self.ax.plot(self.actual_plot_data["time"], self.actual_plot_data["rpm"],
-                                                  color=color, linewidth=2.5, alpha=0.8, label="Actual")
+            self.actual_plot_line_overview, = self.ax_overview.plot(
+                self.actual_plot_data["time"], self.actual_plot_data["rpm"],
+                color=color, linewidth=2.5, alpha=0.8, label="Actual")
+            self.actual_plot_line_live, = self.ax_live.plot(
+                self.actual_plot_data["time"], self.actual_plot_data["rpm"],
+                color=color, linewidth=2.5, alpha=0.8, label="Actual")
         else:
             self.actual_plot_data["time"].append(time_pos)
             self.actual_plot_data["rpm"].append(rpm_pos)
-            self.actual_plot_line.set_data(self.actual_plot_data["time"], self.actual_plot_data["rpm"])
+            self.actual_plot_line_overview.set_data(self.actual_plot_data["time"], self.actual_plot_data["rpm"])
+            self.actual_plot_line_live.set_data(self.actual_plot_data["time"], self.actual_plot_data["rpm"])
 
         if self.live_track_var.get():
-            window_seconds = 60
-            self.ax.set_xlim(max(0, time_pos - window_seconds), time_pos + 10)
-            self.ax.relim()
-            self.ax.autoscale_view(scalex=False, scaley=True)
+            self.ax_live.set_xlim(self.live_phase_start, self.live_phase_end)
+            self.ax_live.relim()
+            self.ax_live.autoscale_view(scalex=False, scaley=True)
         else:
-            self.ax.relim()
-            self.ax.autoscale_view()
+            self.ax_live.relim()
+            self.ax_live.autoscale_view()
 
-        self.canvas.draw_idle()
+        for ax in (self.ax_overview, self.ax_live):
+            ax.figure.canvas.draw_idle()
 
     def _export_plot_image(self):
-        if not hasattr(self, 'fig'): return
+        if not hasattr(self, 'fig_overview'):
+            return
+        fig = self.fig_overview if self.plot_tabs.index('current') == 0 else self.fig_live
         fp = filedialog.asksaveasfilename(
             defaultextension=".png",
             filetypes=[("PNG Image", "*.png"), ("JPEG Image", "*.jpg"), ("SVG Vector", "*.svg")],
             title="Save Plot as Image"
         )
-        if not fp: return
+        if not fp:
+            return
         try:
-            self.fig.savefig(fp, dpi=300, facecolor=self.fig.get_facecolor())
+            fig.savefig(fp, dpi=300, facecolor=fig.get_facecolor())
             self._log(f"Plot saved to {fp}", "INFO")
         except Exception as e:
             messagebox.showerror("Export Failed", f"Could not save image: {e}")
@@ -1972,6 +2016,8 @@ class PumpControlUI(tb.Window):
         self._update_plot(as_plan_background=True)
         self.actual_plot_data = {"time": [0], "rpm": [0]}
         self.last_plot_direction = None
+        self.live_phase_start = 0.0
+        self.live_phase_end = 0.0
 
         self.stop_event.clear()
         self.pause_event.clear()
@@ -2003,6 +2049,10 @@ class PumpControlUI(tb.Window):
             instruction = self.sequence_data[pc]
             if instruction['type'] == 'Phase':
                 phase_start_time = cumulative_time
+                self.live_phase_start = phase_start_time
+                self.live_phase_end = phase_start_time + (
+                    instruction['duration'] * ({'s': 1, 'min': 60, 'hr': 3600}.get(instruction['unit'], 1))
+                )
                 for time_in_phase, rpm_in_phase, direction in self._execute_phase(instruction):
                     if self.stop_event.is_set(): break
                     pause_start_time = time.time()
@@ -2081,6 +2131,10 @@ class PumpControlUI(tb.Window):
             self.step_progress.config(value=step_prog)
             self.total_progress.config(value=total_prog)
             self.step_time_label.config(text=f"Step time: {elapsed_str} / {duration_str}")
+            remaining_total = max(0, duration_total - (time_before + elapsed_step))
+            total_str = str(timedelta(seconds=int(duration_total)))
+            remaining_str = str(timedelta(seconds=int(remaining_total)))
+            self.total_duration_label.config(text=f"Total: {remaining_str} / {total_str}")
 
         self.after(0, _update)
 
