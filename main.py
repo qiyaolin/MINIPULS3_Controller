@@ -50,7 +50,28 @@ def resource_path(relative_path):
 CONFIG_FILE = "pump_controller_settings.json"
 BACKUP_FILE = "pump_controller_backup.json"
 ICON_SIZE = (20, 20)
-APP_VERSION = "3.1.1"
+APP_VERSION = "3.2.0"
+
+# Constants for shear stress calculation
+CHAMBER_COEFFICIENTS = {
+    "µ-Slide I 0.2 Luer": 512.9,
+    "µ-Slide I 0.2 Luer Glass Bottom": 330.4,
+    "µ-Slide I 0.4 Luer": 131.6,
+    "µ-Slide I 0.4 Luer Glass Bottom": 104.7,
+    "µ-Slide I 0.6 Luer": 60.1,
+    "µ-Slide I 0.6 Luer Glass Bottom": 51.5,
+    "µ-Slide I 0.8 Luer": 34.7,
+    "µ-Slide I 0.8 Luer Glass Bottom": 31.0,
+    "µ-Slide VI 0.4": 176.1,
+    "µ-Slide VI 0.5 Glass Bottom": 99.1,
+    "µ-Slide VI 0.1": 10.7,
+    "µ-Slide Membrane ibiPore Flow": 131.6,
+    "µ-Slide I Luer 3D": 60.1,
+}
+
+DEFAULT_VISCOSITY = 0.0070
+DEFAULT_TUBE_COEFFICIENT = 0.63
+DEFAULT_CHAMBER = "µ-Slide VI 0.4"
 
 
 # ==============================================================================
@@ -476,6 +497,28 @@ class SettingsDialog(BaseDialog):
         self.vol_per_rev_entry.insert(0, str(self.settings.get("vol_per_rev_ul", 25.0)))
         self.vol_per_rev_entry.grid(row=1, column=1, sticky='ew', pady=5, padx=5)
 
+        tb.Label(f_pump, text="Dynamic Viscosity η:").grid(row=2, column=0, sticky='w', pady=5)
+        self.viscosity_entry = tb.Entry(f_pump, validate="key", validatecommand=self.vcmd_float)
+        self.viscosity_entry.insert(0, str(self.settings.get("dynamic_viscosity", DEFAULT_VISCOSITY)))
+        self.viscosity_entry.grid(row=2, column=1, sticky='ew', pady=5, padx=5)
+
+        tb.Label(f_pump, text="Tube Coefficient k:").grid(row=3, column=0, sticky='w', pady=5)
+        self.tube_coeff_entry = tb.Entry(f_pump, validate="key", validatecommand=self.vcmd_float)
+        self.tube_coeff_entry.insert(0, str(self.settings.get("tube_coefficient", DEFAULT_TUBE_COEFFICIENT)))
+        self.tube_coeff_entry.grid(row=3, column=1, sticky='ew', pady=5, padx=5)
+
+        tb.Label(f_pump, text="Chamber Type:").grid(row=4, column=0, sticky='w', pady=5)
+        chamber_names = list(CHAMBER_COEFFICIENTS.keys())
+        self.chamber_cb = tb.Combobox(f_pump, values=chamber_names, state="readonly")
+        self.chamber_cb.set(self.settings.get("chamber_type", DEFAULT_CHAMBER))
+        self.chamber_cb.grid(row=4, column=1, sticky='ew', pady=5, padx=5)
+        self.chamber_cb.bind("<<ComboboxSelected>>", self._update_chamber_p)
+
+        tb.Label(f_pump, text="Chamber p:").grid(row=5, column=0, sticky='w', pady=5)
+        self.chamber_p_entry = tb.Entry(f_pump, validate="key", validatecommand=self.vcmd_float)
+        self.chamber_p_entry.insert(0, str(self.settings.get("chamber_p_value", CHAMBER_COEFFICIENTS.get(self.chamber_cb.get(), 176.1))))
+        self.chamber_p_entry.grid(row=5, column=1, sticky='ew', pady=5, padx=5)
+
         # --- Fonts Tab ---
         f_fonts.columnconfigure(1, weight=1)
         self.font_vars = {}
@@ -536,12 +579,22 @@ class SettingsDialog(BaseDialog):
             del self.templates[selected_template]
             self.template_list.delete(selected_indices[0])
 
+    def _update_chamber_p(self, event=None):
+        sel = self.chamber_cb.get()
+        if sel in CHAMBER_COEFFICIENTS:
+            self.chamber_p_entry.delete(0, END)
+            self.chamber_p_entry.insert(0, str(CHAMBER_COEFFICIENTS[sel]))
+
     def on_ok(self):
         try:
             self.settings["theme"] = self.theme_cb.get()
             self.settings["autosave_interval_min"] = int(self.autosave_entry.get())
             self.settings["tube_inner_diameter_mm"] = float(self.tube_id_entry.get())
             self.settings["vol_per_rev_ul"] = float(self.vol_per_rev_entry.get())
+            self.settings["dynamic_viscosity"] = float(self.viscosity_entry.get())
+            self.settings["tube_coefficient"] = float(self.tube_coeff_entry.get())
+            self.settings["chamber_type"] = self.chamber_cb.get()
+            self.settings["chamber_p_value"] = float(self.chamber_p_entry.get())
             self.settings["fonts"] = {key: var.get() for key, var in self.font_vars.items()}
             self.settings["templates"] = self.templates  # Save updated templates
             self.result = self.settings
@@ -639,9 +692,15 @@ class PumpControlUI(tb.Window):
             with open(CONFIG_FILE, 'r') as f:
                 return json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
-            return {"recent_files": [],
-                    "templates": {},
-                    "fonts": {"default": 10, "title": 12, "plot_title": 12, "editor": 11}}
+            return {
+                "recent_files": [],
+                "templates": {},
+                "fonts": {"default": 10, "title": 12, "plot_title": 12, "editor": 11},
+                "dynamic_viscosity": DEFAULT_VISCOSITY,
+                "tube_coefficient": DEFAULT_TUBE_COEFFICIENT,
+                "chamber_type": DEFAULT_CHAMBER,
+                "chamber_p_value": CHAMBER_COEFFICIENTS.get(DEFAULT_CHAMBER, 176.1),
+            }
 
     def _save_settings(self):
         self.settings['theme'] = self.style.theme.name
@@ -845,6 +904,7 @@ class PumpControlUI(tb.Window):
 
     def _create_menu(self):
         menu_bar = tb.Menu(self)
+        menu_bar.configure(font=self.title_font)
         self.config(menu=menu_bar)
 
         # File Menu
@@ -1042,6 +1102,11 @@ class PumpControlUI(tb.Window):
         vsb.pack(side=RIGHT, fill=Y)
         self.sequence_tree.pack(side=LEFT, fill=BOTH, expand=True)
         self.sequence_tree.configure(yscrollcommand=vsb.set)
+
+        # Color coding for directions
+        self.sequence_tree.tag_configure('forward', background='#e6f4ea')
+        self.sequence_tree.tag_configure('backward', background='#fdecea')
+        self.sequence_tree.tag_configure('disabled', foreground='gray')
 
         self.sequence_tree.bind("<Double-1>", self._edit_item)
         self.sequence_tree.bind("<Button-3>", self._show_context_menu)
@@ -1568,9 +1633,19 @@ class PumpControlUI(tb.Window):
                 icon = "↻"
                 details = f"Loop Phases {step['start_phase']}-{step['end_phase']} ({step['repeats']} times)"
 
-            tags = () if is_enabled else ("disabled",)
+            tags = []
+            if step['type'] == 'Phase':
+                tags.append('forward' if step['direction'] == 'Forward' else 'backward')
+            if not is_enabled:
+                tags.append('disabled')
 
-            self.sequence_tree.insert("", END, iid=i, values=(i + 1, icon, step['type'], details, duration), tags=tags)
+            self.sequence_tree.insert(
+                "",
+                END,
+                iid=i,
+                values=(i + 1, icon, step['type'], details, duration),
+                tags=tuple(tags),
+            )
 
         # Restore selection
         for iid in selected_iids:
@@ -1587,26 +1662,23 @@ class PumpControlUI(tb.Window):
         duration_str = str(timedelta(seconds=int(total_s)))
         self.total_duration_label.config(text=f"Total Duration: {duration_str}")
 
-        # Update dynamic pressure estimation
+        # Update shear stress estimation
         try:
-            vol_per_rev = float(self.settings.get("vol_per_rev_ul", 25.0))
-            tube_id_mm = float(self.settings.get("tube_inner_diameter_mm", 1.0))
-            total_revs = 0
             flat_sequence = self._flatten_sequence_for_plot(include_disabled=False)
+            total_weighted_rpm = 0.0
             for step in flat_sequence:
                 duration_s = step['duration'] * ({'s': 1, 'min': 60, 'hr': 3600}.get(step['unit'], 1))
-                avg_rpm = step['rpm']
-                total_revs += (avg_rpm / 60) * duration_s
+                total_weighted_rpm += step['rpm'] * duration_s
+            avg_rpm = total_weighted_rpm / total_s if total_s > 0 else 0
 
-            total_vol_ul = total_revs * vol_per_rev
-            flow_rate_m3_s = (total_vol_ul * 1e-9) / total_s if total_s > 0 else 0
-            diameter_m = tube_id_mm / 1000
-            area_m2 = math.pi * (diameter_m / 2) ** 2
-            velocity_m_s = flow_rate_m3_s / area_m2 if area_m2 > 0 else 0
-            rho = 1000  # density of water kg/m^3
-            q_pa = 0.5 * rho * velocity_m_s ** 2
-            dyn_cm2 = q_pa * 10
-            self.dyn_label.config(text=f"Dyn: {dyn_cm2:.2f} dyn/cm²")
+            eta = float(self.settings.get("dynamic_viscosity", DEFAULT_VISCOSITY))
+            p_const = float(self.settings.get(
+                "chamber_p_value",
+                CHAMBER_COEFFICIENTS.get(self.settings.get("chamber_type", DEFAULT_CHAMBER), 176.1),
+            ))
+            k_coeff = float(self.settings.get("tube_coefficient", DEFAULT_TUBE_COEFFICIENT))
+            tau = eta * p_const * (k_coeff * avg_rpm)
+            self.dyn_label.config(text=f"Dyn: {tau:.2f} dyn/cm²")
         except Exception:
             self.dyn_label.config(text="Dyn: N/A")
 
