@@ -4,6 +4,7 @@ import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 from ttkbootstrap.tooltip import ToolTip
 from ttkbootstrap.scrolled import ScrolledFrame
+from ttkbootstrap.style import Colors
 from tkinter import filedialog, messagebox, font
 import serial
 import serial.tools.list_ports
@@ -50,7 +51,8 @@ def resource_path(relative_path):
 CONFIG_FILE = "pump_controller_settings.json"
 BACKUP_FILE = "pump_controller_backup.json"
 ICON_SIZE = (20, 20)
-APP_VERSION = "3.2.0"
+APP_VERSION = "3.3.0"
+
 
 # Constants for shear stress calculation
 CHAMBER_COEFFICIENTS = {
@@ -821,12 +823,23 @@ class PumpControlUI(tb.Window):
         self.style.map('Treeview', background=[('selected', self.style.colors.primary)])
         self.style.configure("Disabled.Treeview", foreground='gray')
 
+    def _apply_sequence_tag_colors(self):
+        if not hasattr(self, 'sequence_tree'):
+            return
+        colors = self.style.colors
+        fwd_bg = Colors.update_hsv(colors.info, vd=-0.2)
+        rev_bg = Colors.update_hsv(colors.warning, vd=-0.2)
+        self.sequence_tree.tag_configure('forward', background=fwd_bg)
+        self.sequence_tree.tag_configure('backward', background=rev_bg)
+        self.sequence_tree.tag_configure('disabled', foreground='gray')
+
     def _update_styles_and_widgets(self):
         """Re-initializes fonts, re-configures styles, and updates widgets."""
         self._initialize_fonts()
         self._configure_styles()
         # Update widgets that depend on these styles
         if hasattr(self, 'sequence_tree'):
+            self._apply_sequence_tag_colors()
             self._update_treeview()
         if hasattr(self, 'ax'):
             self._update_plot_style()
@@ -1104,9 +1117,7 @@ class PumpControlUI(tb.Window):
         self.sequence_tree.configure(yscrollcommand=vsb.set)
 
         # Color coding for directions
-        self.sequence_tree.tag_configure('forward', background='#e6f4ea')
-        self.sequence_tree.tag_configure('backward', background='#fdecea')
-        self.sequence_tree.tag_configure('disabled', foreground='gray')
+        self._apply_sequence_tag_colors()
 
         self.sequence_tree.bind("<Double-1>", self._edit_item)
         self.sequence_tree.bind("<Button-3>", self._show_context_menu)
@@ -1443,10 +1454,36 @@ class PumpControlUI(tb.Window):
         self._send_pump_command("SK")
         self.command_queue.put({"action": "disconnect"})
 
+    def _compute_shear_stress(self, rpm):
+        """Return shear stress (dyn/cm²) for the given RPM."""
+        try:
+            eta = float(self.settings.get("dynamic_viscosity", DEFAULT_VISCOSITY))
+            p_const = float(
+                self.settings.get(
+                    "chamber_p_value",
+                    CHAMBER_COEFFICIENTS.get(
+                        self.settings.get("chamber_type", DEFAULT_CHAMBER), 176.1
+                    ),
+                )
+            )
+            k_coeff = float(self.settings.get("tube_coefficient", DEFAULT_TUBE_COEFFICIENT))
+            return eta * p_const * (k_coeff * rpm)
+        except Exception:
+            return None
+
+    def _update_dyn_label_with_rpm(self, rpm):
+        tau = self._compute_shear_stress(rpm)
+        if tau is None:
+            self.dyn_label.config(text="Dyn: N/A")
+        else:
+            self.dyn_label.config(text=f"Dyn: {tau:.2f} dyn/cm²")
+
     def _update_speed_label_from_scale(self, value):
         rpm = float(value)
         self.manual_rpm_entry.delete(0, END)
         self.manual_rpm_entry.insert(0, f"{rpm:.1f}")
+        if not self.is_running_sequence:
+            self._update_dyn_label_with_rpm(rpm)
 
     def _set_rpm_from_entry(self, event=None):
         try:
@@ -1464,6 +1501,7 @@ class PumpControlUI(tb.Window):
         self._send_pump_command("K>")
         self.fwd_btn.config(bootstyle="primary")  # Visual feedback
         self.rev_btn.config(bootstyle="primary-outline")
+        self._update_dyn_label_with_rpm(float(self.manual_rpm_entry.get() or 0))
 
     def _manual_start_rev(self):
         self._set_rpm_from_entry()
@@ -1471,11 +1509,13 @@ class PumpControlUI(tb.Window):
         self._send_pump_command("K<")
         self.rev_btn.config(bootstyle="primary")
         self.fwd_btn.config(bootstyle="primary-outline")
+        self._update_dyn_label_with_rpm(float(self.manual_rpm_entry.get() or 0))
 
     def _manual_stop(self):
         self._send_pump_command("KH")
         self.fwd_btn.config(bootstyle="primary-outline")
         self.rev_btn.config(bootstyle="primary-outline")
+        self._update_dyn_label_with_rpm(0)
 
     # --- Sequence Editor Logic ---
     def _add_phase(self):
@@ -1778,6 +1818,8 @@ class PumpControlUI(tb.Window):
             self.actual_plot_data["time"].append(time_pos)
             self.actual_plot_data["rpm"].append(rpm_pos)
             self.actual_plot_line.set_data(self.actual_plot_data["time"], self.actual_plot_data["rpm"])
+
+        self._update_dyn_label_with_rpm(rpm_pos)
 
         if self.live_track_var.get():
             window_seconds = 60
