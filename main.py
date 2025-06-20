@@ -750,7 +750,8 @@ class PumpControlUI(tb.Window):
         fonts = self.settings.get("fonts", {"default": 10, "title": 12, "plot_title": 12, "editor": 11})
         editor_size = fonts.get("editor", 11)
 
-        self.style.configure('TLabelFrame.Label', font=self.title_font)
+        # Ensure label frame titles honor the Panel Title Size setting
+        self.style.configure('TLabelframe.Label', font=self.title_font)
         self.style.configure('Treeview', rowheight=int(editor_size * 2.5), font=self.editor_font,
                              bordercolor=self.style.colors.light, borderwidth=1, relief='solid')
         # Style with light grid lines for the sequence editor
